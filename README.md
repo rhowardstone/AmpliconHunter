@@ -1,6 +1,6 @@
 # AmpliconHunter
 A scalable tool for accurate PCR amplicon prediction from microbiome samples using degenerate primers.
-[(Paper)](https://github.com/rhowardstone/AmpliconHunter)
+[(Preprint)](put link here)
 [(Web Interface)](https://ah1.engr.uconn.edu).
 
 ## Overview
