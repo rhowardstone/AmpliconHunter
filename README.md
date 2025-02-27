@@ -27,13 +27,7 @@ AmpliconHunter is a high-performance, in-silico PCR tool designed to identify po
 - NumPy, Pandas, Matplotlib, Seaborn
 - Optional: HMMER suite (nhmmer, hmmbuild), MAFFT
 
-### Installation via pip
-
-```bash
-pip install ampliconhunter
-```
-
-### Manual Installation
+### Installation
 
 ```bash
 git clone https://github.com/rhowardstone/AmpliconHunter.git
