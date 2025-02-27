@@ -1,0 +1,1 @@
+from .AmpliconHunter import main
