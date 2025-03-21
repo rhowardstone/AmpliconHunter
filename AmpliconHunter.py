@@ -1687,6 +1687,124 @@ def cache_hmm(params, hmm_file, config):
 	cached_path = config.get_hmm_cache_path(cache_key)
 	shutil.copy2(hmm_file, cached_path)
 
+	
+
+
+# This is a simplified version without complex locking
+
+def process_fasta_file(file_path):
+    """Process a single file to convert sequences to uppercase.
+    
+    Args:
+        file_path: Path to the FASTA file
+        
+    Returns:
+        Tuple: (file_path, is_empty)
+    """
+    # Check if file is empty
+    if os.path.getsize(file_path) == 0:
+        os.remove(file_path)
+        return file_path, True
+    
+    # Try using sed for speed
+    try:
+        subprocess.run(
+            ["sed", "-i", "/^>/!s/[a-z]/\\U&/g", file_path], 
+            check=True, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE
+        )
+        return file_path, False
+    except:
+        # Python fallback if sed fails
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+            tmp_path = tmp.name
+            with open(file_path, 'r') as f:
+                for line in f:
+                    if line.startswith('>'):
+                        tmp.write(line)
+                    else:
+                        tmp.write(line.upper())
+        shutil.move(tmp_path, file_path)
+        return file_path, False
+
+def convert_fasta_uppercase(args):
+    """
+    Convert FASTA sequences to uppercase, leaving headers untouched.
+    Simplified version with cleaner multiprocessing.
+    """
+    directory = args.directory
+    recursive = not args.no_recursive
+    threads = args.threads if args.threads else min(20, cpu_count())
+    
+    # Find all FASTA files
+    extensions = ['.fa', '.fasta', '.fna']
+    files_to_process = []
+    
+    print(f"Scanning directory: {directory}")
+    
+    if recursive:
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if any(file.endswith(ext) for ext in extensions):
+                    files_to_process.append(os.path.join(root, file))
+    else:
+        for file in os.listdir(directory):
+            file_path = os.path.join(directory, file)
+            if os.path.isfile(file_path) and any(file.endswith(ext) for ext in extensions):
+                files_to_process.append(file_path)
+    
+    if not files_to_process:
+        print("No FASTA files found.")
+        return
+    
+    print(f"Found {len(files_to_process)} FASTA files")
+    print(f"Using {threads} threads for processing")
+    
+    # Try to import tqdm
+    try:
+        from tqdm import tqdm
+        has_tqdm = True
+    except ImportError:
+        has_tqdm = False
+    
+    # Process files in parallel
+    results = []
+    with Pool(processes=threads) as pool:
+        if has_tqdm:
+            # Use tqdm for nice progress bars
+            results = list(tqdm(
+                pool.imap_unordered(process_fasta_file, files_to_process),
+                total=len(files_to_process),
+                desc="Converting"
+            ))
+        else:
+            # Simple chunked processing with manual progress updates
+            chunk_size = max(1, len(files_to_process) // (threads * 10))
+            completed = 0
+            
+            for i, result in enumerate(pool.imap_unordered(
+                process_fasta_file, 
+                files_to_process, 
+                chunksize=chunk_size
+            )):
+                results.append(result)
+                completed += 1
+                
+                # Show progress periodically
+                if completed % 10 == 0 or completed == len(files_to_process):
+                    percent = completed * 100 // len(files_to_process)
+                    print(f"Progress: {completed}/{len(files_to_process)} files ({percent}%)")
+    
+    # Count empty files
+    empty_files = sum(1 for _, is_empty in results if is_empty)
+    
+    print(f"Completed! Processed {len(files_to_process)} files")
+    print(f"Removed {empty_files} empty files")
+
+
+
+	
 def main():
 	start_time = time.time()
 	
@@ -1704,7 +1822,15 @@ def main():
 							  help="Type of RefSeq database to download (default: complete)")
 	download_parser.add_argument("--timeout", type=float, default=2,
 							  help="Maximum download time in hours (default: 2)")
-	
+			  
+	# Convert FASTA to uppercase command
+	convert_parser = subparsers.add_parser("convert", help="Convert FASTA sequence lines to uppercase")
+	convert_parser.add_argument("directory", help="Directory containing FASTA files to process")
+	convert_parser.add_argument("--no-recursive", action="store_true", 
+							   help="Do not process subdirectories recursively")
+	convert_parser.add_argument("--threads", type=int, 
+							   help="Number of parallel threads to use (default: auto-detect)")
+
 	# Run amplicon hunt command
 	run_parser = subparsers.add_parser("run", help="Run in-silico PCR")
 	run_parser.add_argument("input_file", help="Text file containing absolute paths to input FASTA files")
@@ -1748,7 +1874,9 @@ def main():
 		# Download RefSeq database
 		success = download_refseq_database(config, args.type, args.timeout)
 		return 0 if success else 1
-	
+	elif args.command == "convert":
+		convert_fasta_uppercase(args)
+		return 0
 	elif args.command == "run":
 		# Run AmpliconHunter
 		print('Welcome to AmpliconHunter!')
