@@ -165,6 +165,38 @@ GCF_000022305.1	Bacteria	Pseudomonadota	Betaproteobacteria	Burkholderiales	Comam
 
 ## Advanced Usage
 
+
+### Convert Command Options
+```
+usage: ampliconhunter convert [-h] [--no-recursive] [--threads THREADS] directory
+
+positional arguments:
+  directory          Directory containing FASTA files to process
+
+optional arguments:
+  -h, --help         show this help message and exit
+  --no-recursive     Do not process subdirectories recursively
+  --threads THREADS  Number of parallel threads to use (default: auto-detect)
+```
+
+The `convert` command is a utility to prepare FASTA files by converting all sequence lines to uppercase while leaving the header lines untouched. This can be helpful when working with databases where some sequences might use lowercase letters for certain purposes (like masking or indicating low-complexity regions).
+
+
+
+### Download-RefSeq Command Options
+```
+usage: ampliconhunter download-refseq [-h] [--type {complete,all}] [--timeout TIMEOUT]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --type {complete,all} Type of RefSeq database to download (default: complete)
+  --timeout TIMEOUT     Maximum download time in hours (default: 2)
+```
+
+The `download-refseq` command downloads and prepares a local copy of the NCBI RefSeq bacterial genome database for use with AmpliconHunter. The `--type complete` option (default) downloads only complete genome assemblies, while `--type all` downloads all reference genomes including incomplete assemblies.
+
+
+
 ### IUPAC Degenerate Base Codes
 
 AmpliconHunter supports all IUPAC degenerate nucleotide codes:
