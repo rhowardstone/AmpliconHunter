@@ -193,7 +193,7 @@ optional arguments:
   --timeout TIMEOUT     Maximum download time in hours (default: 2)
 ```
 
-The `download-refseq` command downloads and prepares a local copy of the NCBI RefSeq bacterial genome database for use with AmpliconHunter. The `--type complete` option (default) downloads only complete genome assemblies, while `--type all` downloads all reference genomes including incomplete assemblies.
+The `download-refseq` command downloads and prepares a local copy of the NCBI RefSeq bacterial genome database for use with AmpliconHunter. The `--type complete` option (default) downloads only complete reference genome assemblies, while `--type all` downloads _all_ reference genomes including incomplete assemblies.
 
 
 
