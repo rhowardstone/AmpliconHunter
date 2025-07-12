@@ -2212,13 +2212,14 @@ def main():
 			"output_directory": args.output_directory
 		}
 		
-		stats = calculate_summary_statistics(args.input_file, args.output_directory, start_time, run_parameters)
-		print("\nRun Summary:")
-		print(f"Runtime: {stats['runtime_formatted']}")
-		print(f"Genomes amplified: {stats['genomes_amplified']}/{stats['total_genomes']} ({stats['percent_genomes_amplified']}%)")
-		print(f"Total amplicons: {stats['total_amplicons']}")
-		print(f"Average amplicons per genome: {stats['avg_amplicons_per_genome']}")
-		print(f"Off-target rate: {stats['off_target_rate']}%")
+		if not args.input_fq:
+			stats = calculate_summary_statistics(args.input_file, args.output_directory, start_time, run_parameters)
+			print("\nRun Summary:")
+			print(f"Runtime: {stats['runtime_formatted']}")
+			print(f"Genomes amplified: {stats['genomes_amplified']}/{stats['total_genomes']} ({stats['percent_genomes_amplified']}%)")
+			print(f"Total amplicons: {stats['total_amplicons']}")
+			print(f"Average amplicons per genome: {stats['avg_amplicons_per_genome']}")
+			print(f"Off-target rate: {stats['off_target_rate']}%")
 	
 	else:
 		# No command specified or invalid command
@@ -2243,3 +2244,4 @@ if __name__ == "__main__":
 	print(f"real: {real:.3f}s")
 	print(f"user: {user:.3f}s")
 	print(f"sys: {sys:.3f}s")
+		
