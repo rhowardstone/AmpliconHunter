@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ampliconhunter",
-    version="1.0.0",
+    version="1.0.1",
     description="A scalable tool for PCR amplicon prediction from microbiome samples",
     author="Rye Howard-Stone",
     author_email="rye.howard-stone@uconn.edu",
