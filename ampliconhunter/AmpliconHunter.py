@@ -484,6 +484,10 @@ def write_parameters(args):
 		"use_decoy": args.decoy,
 		"use_hmm": bool(args.hmm),
 		"hmm_file": args.hmm if args.hmm else None,
+		"include_offtarget": args.include_offtarget,
+		"trim_primers": args.trim_primers,
+		"forward_barcode_length": args.fb_len,
+		"reverse_barcode_length": args.rb_len,
 		"dnac1": args.dnac1,
 		"dnac2": args.dnac2,
 		"Na": args.Na,
@@ -1101,9 +1105,18 @@ def create_reverse_visualizations(input_dir, output_dir, args):
 def create_visualizations(input_dir, output_dir, args):
 	"""Create visualizations using streaming processing"""
 	try:
+		# Check for both FASTA and FASTQ files
 		fasta_file = os.path.join(input_dir, 'amplicons.fa')
-		if not os.path.exists(fasta_file) or os.path.getsize(fasta_file) == 0:
-			print(f"No amplicons found in {fasta_file} or file is empty; skipping plots.")
+		fastq_file = os.path.join(input_dir, 'amplicons.fq')
+		
+		if os.path.exists(fastq_file) and os.path.getsize(fastq_file) > 0:
+			input_file = fastq_file
+			is_fastq = True
+		elif os.path.exists(fasta_file) and os.path.getsize(fasta_file) > 0:
+			input_file = fasta_file
+			is_fastq = False
+		else:
+			print(f"No amplicons found; skipping plots.")
 			return
 		
 		visualizer = StreamingVisualizer(output_dir, args)
@@ -1111,19 +1124,35 @@ def create_visualizations(input_dir, output_dir, args):
 		# Read and process sequences
 		current_header = ""
 		current_sequence = ""
-		with open(fasta_file, 'r') as f:
-			for line in f:
-				if line.startswith('>'):
-					if current_header and current_sequence:  # Store the previous sequence
-						visualizer.process_header(current_header, current_sequence)
-					current_header = line.strip()
-					current_sequence = ""
-				else:
-					current_sequence += line.strip()
-			
-			# Don't forget to process the last sequence
-			if current_header and current_sequence:
-				visualizer.process_header(current_header, current_sequence)
+		with open(input_file, 'r') as f:
+			if is_fastq:
+				line_count = 0
+				for line in f:
+					if line_count % 4 == 0:  # Header line
+						if current_header and current_sequence:
+							visualizer.process_header(current_header, current_sequence)
+						current_header = line.strip()[1:]  # Remove '@'
+						current_sequence = ""
+					elif line_count % 4 == 1:  # Sequence line
+						current_sequence = line.strip()
+					# Skip + and quality lines for visualization
+					line_count += 1
+			else:
+				# Existing FASTA processing
+				for line in f:
+					if line.startswith('>'):
+						if current_header and current_sequence:
+							visualizer.process_header(current_header, current_sequence)
+						current_header = line.strip()
+						current_sequence = ""
+					else:
+						current_sequence += line.strip()
+		
+		# Process last sequence
+		if current_header and current_sequence:
+			visualizer.process_header(current_header, current_sequence)
+		
+		# [... rest of visualization code ...]
 		
 		# Generate plots and statistics
 		visualizer.generate_plots()
@@ -1184,7 +1213,51 @@ def list_nondegen_equivalents(seq):
 				temp.append(p+q)
 		poss = temp.copy()
 	return set(poss)
-
+def read_fastq_sequence(file):
+	"""Optimized generator function to yield sequences and qualities from a FASTQ file."""
+	with open(file, 'rb') as fastq_file:
+		chunk_size = 1024 * 1024  # 1MB chunks
+		remainder = b""
+		line_count = 0
+		sequence_id = None
+		sequence_parts = []
+		quality_parts = []
+		
+		while True:
+			chunk = fastq_file.read(chunk_size)
+			if not chunk:
+				break
+				
+			# Combine with remainder
+			data = remainder + chunk
+			lines = data.split(b'\n')
+			
+			# Save the last partial line
+			remainder = lines[-1]
+			lines = lines[:-1]
+			
+			for line in lines:
+				line_decoded = line.decode('ascii').strip()
+				if not line_decoded:
+					continue
+					
+				if line_count % 4 == 0:  # Header line
+					if sequence_id:
+						yield sequence_id, ''.join(sequence_parts), ''.join(quality_parts)
+					sequence_id = line_decoded[1:]  # Remove '@'
+					sequence_parts = []
+					quality_parts = []
+				elif line_count % 4 == 1:  # Sequence line
+					sequence_parts.append(line_decoded)
+				elif line_count % 4 == 3:  # Quality line
+					quality_parts.append(line_decoded)
+				# line_count % 4 == 2 is the '+' line, which we skip
+				
+				line_count += 1
+		
+		# Don't forget the last record
+		if sequence_id:
+			yield sequence_id, ''.join(sequence_parts), ''.join(quality_parts)
 def read_fasta_sequence(file):
 	"""Optimized generator function to yield sequences from a FASTA file."""
 	# Use binary mode for faster IO
@@ -1230,10 +1303,12 @@ def run_hmmsearch(hmm_file, fasta_file, output_file, threads=1):
 		   "--dna", hmm_file, fasta_file]
 	subprocess.run(cmd, stdout=subprocess.DEVNULL)
 
+
 def process_genome(args):
 	global _db, _primers
 	forward_primer, reverse_primer, forward_rc, reverse_rc, forward_primer_nondegen, reverse_primer_nondegen = _primers
-	f, Tm, Lmin, Lmax, clamp, include_offtarget, decoy, dnac1, dnac2, Na, Tris, Mg, dNTPs, saltcorr = args
+	# Unpack args - add input_fq to the list
+	f, Tm, Lmin, Lmax, clamp, include_offtarget, decoy, dnac1, dnac2, Na, Tris, Mg, dNTPs, saltcorr, fb_len, rb_len, trim_primers, input_fq = args
 	
 	def on_match(id, from_, to, flags, context):
 		id_map = {0: 'F', 1: 'F_rc', 2: 'R', 3: 'R_rc'}
@@ -1243,13 +1318,24 @@ def process_genome(args):
 	hyperscan_time, reading_time = 0, 0
 	
 	amplicons = {}
+	amplicon_qualities = {}  # New: store quality scores
 	if decoy:
 		decoy_amplicons = {}
+		decoy_qualities = {}  # New: store decoy quality scores
 	
 	read_start = time.time()
-	for sequence_id, sequence in read_fasta_sequence(f):
+	
+	# Choose appropriate reader based on input format
+	if input_fq:
+		sequence_reader = read_fastq_sequence(f)
+	else:
+		# For FASTA, add None as quality placeholder
+		sequence_reader = ((seq_id, seq, None) for seq_id, seq in read_fasta_sequence(f))
+	
+	for sequence_id, sequence, quality in sequence_reader:
 		reading_time += time.time()-read_start
-		# Process forward sequence
+		
+		# Process forward sequence (existing logic)
 		matches = []
 		scan_start = time.time()
 		_db.scan(sequence.encode(), match_event_handler=on_match)
@@ -1312,7 +1398,7 @@ def process_genome(args):
 					filtered_matches.append((m[0], m[1], m[2], max_melting_temp))
 					
 		matches = filtered_matches
-		
+		trimlens = {'F':len(forward_primer),'R':len(reverse_primer)}
 		# Find amplicons
 		for i in range(len(matches)-1):
 			if matches[i][0] in {'F', 'R'}:
@@ -1327,13 +1413,55 @@ def process_genome(args):
 					if matches[j][0] in {'F_rc', 'R_rc'}:
 						orientation = matches[i][0]+matches[j][0][0]
 						if include_offtarget or orientation in {'FR','RF'}:
-							amplicon = sequence[matches[i][1]:matches[j][2]]
+							
+							if trim_primers:
+								amplicon = sequence[matches[i][2]:matches[j][1]]
+								if quality:
+									amplicon_quality = quality[matches[i][2]:matches[j][1]]
+							else:
+								amplicon = sequence[matches[i][1]:matches[j][2]]
+								if quality:
+									amplicon_quality = quality[matches[i][1]:matches[j][2]]
+							
 							if orientation[0]=='R':
 								amplicon = rev_comp(amplicon)
+								if quality:
+									amplicon_quality = amplicon_quality[::-1]  # Reverse quality scores
+							
 							temp = min(matches[i][3], matches[j][3])
+							
+							# Extract barcodes (existing logic)
+							forward_barcode = ""
+							reverse_barcode = ""
+							if fb_len > 0 or rb_len > 0:
+								if orientation == 'FR':
+									# Forward barcode is upstream of forward primer
+									if fb_len > 0 and matches[i][1] >= fb_len:
+										forward_barcode = sequence[matches[i][1]-fb_len:matches[i][1]]   #NOT SURE THIS IS RIGHT YET
+									# Reverse barcode is downstream of reverse primer
+									if rb_len > 0 and matches[j][2] + rb_len <= len(sequence):
+										reverse_barcode = sequence[matches[j][2]:matches[j][2]+rb_len]
+								elif orientation == 'RF':
+									# For RF, the logic is reversed and we need to handle reverse complement
+									if fb_len > 0 and matches[j][2] + fb_len <= len(sequence):
+										# This gets reverse complemented later
+										forward_barcode = sequence[matches[j][2]:matches[j][2]+fb_len]
+									if rb_len > 0 and matches[i][1] >= rb_len:
+										# This gets reverse complemented later
+										reverse_barcode = sequence[matches[i][1]-rb_len:matches[i][1]]
+									# Apply reverse complement since we reverse complement the amplicon
+									forward_barcode = rev_comp(forward_barcode)
+									reverse_barcode = rev_comp(reverse_barcode)
+							
 							newID = f"{sequence_id}.source={os.path.basename(f)}.coordinates={matches[i][1]}-{matches[j][2]}.orientation={orientation}.Tm={temp}"
+							if forward_barcode:
+								newID += f".fb={forward_barcode}"
+							if reverse_barcode:
+								newID += f".rb={reverse_barcode}"
 							
 							amplicons[newID] = amplicon
+							if quality:
+								amplicon_qualities[newID] = amplicon_quality
 
 		if decoy:
 			# Process reverse sequence for decoys
@@ -1427,9 +1555,15 @@ def process_genome(args):
 		read_start = time.time()
 	
 	if decoy:
-		return amplicons, decoy_amplicons, reading_time, hyperscan_time
+		if input_fq:
+			return amplicons, amplicon_qualities, decoy_amplicons, decoy_qualities, reading_time, hyperscan_time
+		else:
+			return amplicons, decoy_amplicons, reading_time, hyperscan_time
 	else:
-		return amplicons, reading_time, hyperscan_time
+		if input_fq:
+			return amplicons, amplicon_qualities, reading_time, hyperscan_time
+		else:
+			return amplicons, reading_time, hyperscan_time
 
 def read_primers(primer_file):
 	# Read primers
@@ -1439,11 +1573,26 @@ def read_primers(primer_file):
 	except Exception as e:
 		print(f"Error reading primer file: {e}")
 		exit(1)
-	
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def AmpliconHunter(input_file, primer_file, output_directory, threads=1, mismatches=0, 
 				  Lmin=50, Lmax=5000, Tm=None, hmm_file=None, include_offtarget=False, 
 				  decoy=False, clamp=5, dnac1=1000, dnac2=25, Na=50, Tris=0, Mg=4, 
-				  dNTPs=1.6, saltcorr=5, timeout_hours=None, config=None):
+				  dNTPs=1.6, saltcorr=5, timeout_hours=None, config=None, 
+				  fb_len=0, rb_len=0, trim_primers=False, input_fq=False):
 	timeout_seconds = int(timeout_hours * 3600) if timeout_hours else None
 	num_amplicons = 0
 	try:
@@ -1468,8 +1617,7 @@ def AmpliconHunter(input_file, primer_file, output_directory, threads=1, mismatc
 			primers = (forward_primer, reverse_primer, forward_rc, reverse_rc, 
 					  forward_primer_nondegen, reverse_primer_nondegen)
 
-			dataset = [[f, Tm, Lmin, Lmax, clamp, include_offtarget, decoy, dnac1, dnac2, Na, Tris, Mg, dNTPs, saltcorr] 
-					   for f in All_genome_files]
+			dataset = [[f, Tm, Lmin, Lmax, clamp, include_offtarget, decoy, dnac1, dnac2, Na, Tris, Mg, dNTPs, saltcorr, fb_len, rb_len, trim_primers, input_fq] for f in All_genome_files]
 
 			with Pool(processes=threads, initializer=init_worker, 
 					  initargs=(patterns, mismatches, primers)) as pool:
@@ -1481,39 +1629,61 @@ def AmpliconHunter(input_file, primer_file, output_directory, threads=1, mismatc
 			write_start = time.time()
 
 			if not decoy:
-				with open(f"{output_directory}/amplicons.fa", 'w+') as Out:
-					for amplicons in result:
-						if amplicons[0]:
-							Out.write("\n".join([f">{ID}\n{amplicons[0][ID]}" 
-											   for ID in amplicons[0]])+"\n")
-							num_amplicons += len(amplicons[0])
-				write_time = time.time() - write_start
-				if hmm_file and num_amplicons != 0:
-					run_hmmsearch(hmm_file, f"{output_directory}/amplicons.fa",
-										f"{output_directory}/amplicons_hmm_scores.txt", threads=threads)
+				if input_fq:
+					# Write FASTQ output
+					with open(f"{output_directory}/amplicons.fq", 'w+') as Out:
+						for result_tuple in result:
+							amplicons, qualities = result_tuple[0], result_tuple[1]
+							for ID in amplicons:
+								Out.write(f"@{ID}\n{amplicons[ID]}\n+\n{qualities[ID]}\n")
+								num_amplicons += 1
+				else:
+					# Existing FASTA output
+					with open(f"{output_directory}/amplicons.fa", 'w+') as Out:
+						for amplicons in result:
+							if amplicons[0]:
+								Out.write("\n".join([f">{ID}\n{amplicons[0][ID]}" 
+												   for ID in amplicons[0]])+"\n")
+								num_amplicons += len(amplicons[0])
 			else:
-				num_decoy_amplicons = 0
-				with open(f"{output_directory}/amplicons.fa", 'w+') as Out1, \
-					 open(f"{output_directory}/decoy_amplicons.fa", 'w+') as Out2:
-					for result_tuple in result:
-						regular_amplicons, decoy_amplicons, read_time, scan_time = result_tuple
-						
-						if regular_amplicons:
-							Out1.write("\n".join([f">{ID}\n{regular_amplicons[ID]}" 
-												for ID in regular_amplicons])+"\n")
-						if decoy_amplicons:
-							Out2.write("\n".join([f">{ID}\n{decoy_amplicons[ID]}" 
-												for ID in decoy_amplicons])+"\n")
+				# Similar modifications for decoy output
+				if input_fq:
+					with open(f"{output_directory}/amplicons.fq", 'w+') as Out1, \
+						 open(f"{output_directory}/decoy_amplicons.fq", 'w+') as Out2:
+						for result_tuple in result:
+							regular_amplicons, regular_qualities, decoy_amplicons, decoy_qualities = (
+								result_tuple[0], result_tuple[1], result_tuple[2], result_tuple[3])
+							
+							for ID in regular_amplicons:
+								Out1.write(f"@{ID}\n{regular_amplicons[ID]}\n+\n{regular_qualities[ID]}\n")
+							for ID in decoy_amplicons:
+								Out2.write(f"@{ID}\n{decoy_amplicons[ID]}\n+\n{decoy_qualities[ID]}\n")
+							
+							num_amplicons += len(regular_amplicons)
+							num_decoy_amplicons += len(decoy_amplicons)
+				else:
+					num_decoy_amplicons = 0
+					with open(f"{output_directory}/amplicons.fa", 'w+') as Out1, \
+						 open(f"{output_directory}/decoy_amplicons.fa", 'w+') as Out2:
+						for result_tuple in result:
+							regular_amplicons, decoy_amplicons, read_time, scan_time = result_tuple
+							
+							if regular_amplicons:
+								Out1.write("\n".join([f">{ID}\n{regular_amplicons[ID]}" 
+													for ID in regular_amplicons])+"\n")
+							if decoy_amplicons:
+								Out2.write("\n".join([f">{ID}\n{decoy_amplicons[ID]}" 
+													for ID in decoy_amplicons])+"\n")
 
-						num_amplicons += len(regular_amplicons)
-						num_decoy_amplicons += len(decoy_amplicons)
-				write_time = time.time() - write_start
+							num_amplicons += len(regular_amplicons)
+							num_decoy_amplicons += len(decoy_amplicons)
 				if hmm_file and num_amplicons != 0:
-					run_hmmsearch(hmm_file, f"{output_directory}/amplicons.fa",
+					output_ext = "fq" if input_fq else "fa"
+					run_hmmsearch(hmm_file, f"{output_directory}/amplicons.{output_ext}",
 								 f"{output_directory}/amplicons_hmm_scores.txt", threads=threads)
-					run_hmmsearch(hmm_file, f"{output_directory}/decoy_amplicons.fa",
-								 f"{output_directory}/decoy_amplicons_hmm_scores.txt", threads=threads)
-			print("Write time:", write_time)
+					if decoy:
+						run_hmmsearch(hmm_file, f"{output_directory}/decoy_amplicons.{output_ext}",
+									 f"{output_directory}/decoy_amplicons_hmm_scores.txt", threads=threads)
 
 	except TimeoutError:
 		print(f"\nExecution timed out after {timeout_hours} hours")
@@ -1693,114 +1863,114 @@ def cache_hmm(params, hmm_file, config):
 # This is a simplified version without complex locking
 
 def process_fasta_file(file_path):
-    """Process a single file to convert sequences to uppercase.
-    
-    Args:
-        file_path: Path to the FASTA file
-        
-    Returns:
-        Tuple: (file_path, is_empty)
-    """
-    # Check if file is empty
-    if os.path.getsize(file_path) == 0:
-        os.remove(file_path)
-        return file_path, True
-    
-    # Try using sed for speed
-    try:
-        subprocess.run(
-            ["sed", "-i", "/^>/!s/[a-z]/\\U&/g", file_path], 
-            check=True, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE
-        )
-        return file_path, False
-    except:
-        # Python fallback if sed fails
-        with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
-            tmp_path = tmp.name
-            with open(file_path, 'r') as f:
-                for line in f:
-                    if line.startswith('>'):
-                        tmp.write(line)
-                    else:
-                        tmp.write(line.upper())
-        shutil.move(tmp_path, file_path)
-        return file_path, False
+	"""Process a single file to convert sequences to uppercase.
+	
+	Args:
+		file_path: Path to the FASTA file
+		
+	Returns:
+		Tuple: (file_path, is_empty)
+	"""
+	# Check if file is empty
+	if os.path.getsize(file_path) == 0:
+		os.remove(file_path)
+		return file_path, True
+	
+	# Try using sed for speed
+	try:
+		subprocess.run(
+			["sed", "-i", "/^>/!s/[a-z]/\\U&/g", file_path], 
+			check=True, 
+			stdout=subprocess.PIPE, 
+			stderr=subprocess.PIPE
+		)
+		return file_path, False
+	except:
+		# Python fallback if sed fails
+		with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+			tmp_path = tmp.name
+			with open(file_path, 'r') as f:
+				for line in f:
+					if line.startswith('>'):
+						tmp.write(line)
+					else:
+						tmp.write(line.upper())
+		shutil.move(tmp_path, file_path)
+		return file_path, False
 
 def convert_fasta_uppercase(args):
-    """
-    Convert FASTA sequences to uppercase, leaving headers untouched.
-    Simplified version with cleaner multiprocessing.
-    """
-    directory = args.directory
-    recursive = not args.no_recursive
-    threads = args.threads if args.threads else min(20, cpu_count())
-    
-    # Find all FASTA files
-    extensions = ['.fa', '.fasta', '.fna']
-    files_to_process = []
-    
-    print(f"Scanning directory: {directory}")
-    
-    if recursive:
-        for root, _, files in os.walk(directory):
-            for file in files:
-                if any(file.endswith(ext) for ext in extensions):
-                    files_to_process.append(os.path.join(root, file))
-    else:
-        for file in os.listdir(directory):
-            file_path = os.path.join(directory, file)
-            if os.path.isfile(file_path) and any(file.endswith(ext) for ext in extensions):
-                files_to_process.append(file_path)
-    
-    if not files_to_process:
-        print("No FASTA files found.")
-        return
-    
-    print(f"Found {len(files_to_process)} FASTA files")
-    print(f"Using {threads} threads for processing")
-    
-    # Try to import tqdm
-    try:
-        from tqdm import tqdm
-        has_tqdm = True
-    except ImportError:
-        has_tqdm = False
-    
-    # Process files in parallel
-    results = []
-    with Pool(processes=threads) as pool:
-        if has_tqdm:
-            # Use tqdm for nice progress bars
-            results = list(tqdm(
-                pool.imap_unordered(process_fasta_file, files_to_process),
-                total=len(files_to_process),
-                desc="Converting"
-            ))
-        else:
-            # Simple chunked processing with manual progress updates
-            chunk_size = max(1, len(files_to_process) // (threads * 10))
-            completed = 0
-            
-            for i, result in enumerate(pool.imap_unordered(
-                process_fasta_file, 
-                files_to_process, 
-                chunksize=chunk_size
-            )):
-                results.append(result)
-                completed += 1
-                
-                # Show progress periodically
-                if completed % 10 == 0 or completed == len(files_to_process):
-                    percent = completed * 100 // len(files_to_process)
-                    print(f"Progress: {completed}/{len(files_to_process)} files ({percent}%)")
-    
-    # Count empty files
-    empty_files = sum(1 for _, is_empty in results if is_empty)
-    
-    print(f"Completed! Processed {len(files_to_process)} files")
-    print(f"Removed {empty_files} empty files")
+	"""
+	Convert FASTA sequences to uppercase, leaving headers untouched.
+	Simplified version with cleaner multiprocessing.
+	"""
+	directory = args.directory
+	recursive = not args.no_recursive
+	threads = args.threads if args.threads else min(20, cpu_count())
+	
+	# Find all FASTA files
+	extensions = ['.fa', '.fasta', '.fna']
+	files_to_process = []
+	
+	print(f"Scanning directory: {directory}")
+	
+	if recursive:
+		for root, _, files in os.walk(directory):
+			for file in files:
+				if any(file.endswith(ext) for ext in extensions):
+					files_to_process.append(os.path.join(root, file))
+	else:
+		for file in os.listdir(directory):
+			file_path = os.path.join(directory, file)
+			if os.path.isfile(file_path) and any(file.endswith(ext) for ext in extensions):
+				files_to_process.append(file_path)
+	
+	if not files_to_process:
+		print("No FASTA files found.")
+		return
+	
+	print(f"Found {len(files_to_process)} FASTA files")
+	print(f"Using {threads} threads for processing")
+	
+	# Try to import tqdm
+	try:
+		from tqdm import tqdm
+		has_tqdm = True
+	except ImportError:
+		has_tqdm = False
+	
+	# Process files in parallel
+	results = []
+	with Pool(processes=threads) as pool:
+		if has_tqdm:
+			# Use tqdm for nice progress bars
+			results = list(tqdm(
+				pool.imap_unordered(process_fasta_file, files_to_process),
+				total=len(files_to_process),
+				desc="Converting"
+			))
+		else:
+			# Simple chunked processing with manual progress updates
+			chunk_size = max(1, len(files_to_process) // (threads * 10))
+			completed = 0
+			
+			for i, result in enumerate(pool.imap_unordered(
+				process_fasta_file, 
+				files_to_process, 
+				chunksize=chunk_size
+			)):
+				results.append(result)
+				completed += 1
+				
+				# Show progress periodically
+				if completed % 10 == 0 or completed == len(files_to_process):
+					percent = completed * 100 // len(files_to_process)
+					print(f"Progress: {completed}/{len(files_to_process)} files ({percent}%)")
+	
+	# Count empty files
+	empty_files = sum(1 for _, is_empty in results if is_empty)
+	
+	print(f"Completed! Processed {len(files_to_process)} files")
+	print(f"Removed {empty_files} empty files")
 
 
 
@@ -1820,8 +1990,8 @@ def main():
 	download_parser = subparsers.add_parser("download-refseq", help="Download RefSeq database")
 	download_parser.add_argument("--type", choices=["complete", "all"], default="complete",
 							  help="Type of RefSeq database to download (default: complete)")
-	download_parser.add_argument("--timeout", type=float, default=2,
-							  help="Maximum download time in hours (default: 2)")
+	download_parser.add_argument("--timeout", type=float, default=999,
+							  help="Maximum download time in hours (default: 999)")
 			  
 	# Convert FASTA to uppercase command
 	convert_parser = subparsers.add_parser("convert", help="Convert FASTA sequence lines to uppercase")
@@ -1853,8 +2023,13 @@ def main():
 	run_parser.add_argument("--dNTPs", type=float, default=1.6, help="Total deoxynucleotide concentration [mM]")
 	run_parser.add_argument("--saltcorr", type=float, default=5, help="Salt correction method (0-5)")
 	run_parser.add_argument("--taxonomy", help="Path to taxonomy mapping file")
-	run_parser.add_argument("--no-plots", action="store_true", help="Skip generating visualization plots")
+	run_parser.add_argument("--plots", action="store_true", help="Generate visualization plots (default: skip plots)")
 	run_parser.add_argument("--timeout", type=float, help="Maximum execution time in hours")
+	run_parser.add_argument("--fb-len", type=int, default=0, help="Forward barcode length to extract (default: 0, no extraction)")
+	run_parser.add_argument("--rb-len", type=int, default=0, help="Reverse barcode length to extract (default: 0, no extraction)")
+	run_parser.add_argument("--include-offtarget", action="store_true", help="Include off-target (FF/RR) amplicons in output (default: False)")
+	run_parser.add_argument("--trim-primers", action="store_true", help="Trim primer sequences from amplicons (default: False)")
+	run_parser.add_argument("--input-fq", action="store_true", help="Input files are in FASTQ format (default: FASTA)")
 	
 	args = parser.parse_args()
 	
@@ -1931,7 +2106,7 @@ def main():
 												threads=args.threads, mismatches=0, 
 												Lmin=args.Lmin, Lmax=args.Lmax, 
 												include_offtarget=False, clamp=args.clamp,
-												config=config)
+												config=config, fb_len=0, rb_len=0, trim_primers=False)
 
 						if num_amps != 0:
 							align_time = time.time()
@@ -1968,7 +2143,11 @@ def main():
 						   Na=args.Na, Tris=args.Tris, Mg=args.Mg, 
 						   dNTPs=args.dNTPs, saltcorr=args.saltcorr,
 						   timeout_hours=args.timeout,
-						   config=config)
+						   config=config,
+						   fb_len=args.fb_len,
+						   rb_len=args.rb_len,
+						   trim_primers=args.trim_primers,
+						   input_fq=args.input_fq)
 			if num_amplicons is None:
 				print("Run terminated due to timeout")
 				sys.exit(1)
@@ -1979,7 +2158,7 @@ def main():
 			sys.exit(1)
 
 		# Generate plots if requested and if amplicons were found
-		if not args.no_plots and num_amplicons > 0:
+		if args.plots and num_amplicons > 0:
 			print("\nGenerating visualizations...")
 			try:
 				# Create a plots subdirectory
@@ -2064,4 +2243,3 @@ if __name__ == "__main__":
 	print(f"real: {real:.3f}s")
 	print(f"user: {user:.3f}s")
 	print(f"sys: {sys:.3f}s")
-		
