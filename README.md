@@ -5,7 +5,9 @@ A scalable tool for accurate PCR amplicon prediction from microbiome samples usi
 
 ## Overview
 
-AmpliconHunter is a high-performance, in-silico PCR tool designed to identify potential amplicons from large collections of microbial genomes. It supports degenerate primers and provides accurate prediction of primer binding and amplification based on melting temperature and other PCR parameters. The tool now supports both FASTA and FASTQ input formats and can extract barcodes from amplicon sequences.
+AmpliconHunter is a high-performance, in-silico PCR tool designed to identify potential amplicons from large collections of microbial genomes. It supports degenerate primers and provides accurate prediction of primer binding and amplification based on melting temperature and other PCR parameters. The tool now includes support for FASTQ input format, and can extract barcodes (or otherwise flanking regions) from sequence data while normalizing output for strand and trimming primers (à la cutadapt).
+
+If you do not need the advanced features (HMM construction, FASTQ support, visualization, decoy analysis, etc.), we recommend you check out our optimized [AmpliconHunter2](https://github.com/rhowardstone/AmpliconHunter2) tool (~2-3x faster) to see if it meets your needs.
 
 ## Features
 
