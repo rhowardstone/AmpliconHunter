@@ -151,7 +151,7 @@ positional arguments:
 optional arguments:
   -h, --help            show this help message and exit
   --threads THREADS     Number of threads to use (default: all processors)
-  --Tm TM               Minimum melting temperature threshold (°C)
+  --Tm TM               Minimum melting temperature threshold (°C) (default: do not filter)
   --mismatches MISMATCHES
                         Number of allowed mismatches in primer binding (default: 0)
   --clamp CLAMP         Number of 3'-most bases that must match perfectly (default: 5)
