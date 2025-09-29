@@ -2,7 +2,7 @@
 
 A scalable tool for accurate PCR amplicon prediction from microbiome samples using degenerate primers. ([Preprint](https://arxiv.org/abs/2509.13300))
 
-[(Web Interface)](https://ah1.engr.uconn.edu)
+([Web Interface](https://ah1.engr.uconn.edu))
 
 
 
