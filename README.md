@@ -2,7 +2,10 @@
 A scalable tool for accurate PCR amplicon prediction from microbiome samples using degenerate primers.
 
 [(Web Interface)](https://ah1.engr.uconn.edu)
+
+
 [Preprint](https://arxiv.org/abs/2509.13300)
+
 ## Overview
 
 AmpliconHunter is a high-performance, in-silico PCR tool designed to identify potential amplicons from large collections of microbial genomes. It supports degenerate primers and provides accurate prediction of primer binding and amplification based on melting temperature and other PCR parameters. The tool now includes support for FASTQ input format, and can extract barcodes (or otherwise flanking regions) from sequence data while normalizing output for strand and trimming primers (à la cutadapt).
